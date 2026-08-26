@@ -7,11 +7,10 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
-# Never cancel a build that has already started. This prevents a successful
-# APK build from being marked cancelled by a newer commit.
+# Cancel stale queued/running builds so the newest commit is always buildable.
 concurrency:
   group: sinyalce-android-build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: read
