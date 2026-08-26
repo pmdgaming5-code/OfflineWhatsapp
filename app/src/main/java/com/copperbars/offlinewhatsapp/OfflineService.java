@@ -44,10 +44,12 @@ public final class OfflineService extends Service {
     public static final String EXTRA_ROOM = "room";
     public static final String EXTRA_STATUS = "status";
 
-    private static final String PREFS = "sinyalce_service";
+    private static final String PROFILE_PREFS = "sinyalce_profile";
+    private static final String SESSION_PREFS = "sinyalce_service";
+    private static final String NAME_KEY = "name";
     private static final int PORT = 45821;
     private static final int MAX_PACKET_BYTES = 12 * 1024 * 1024;
-    private static final int MAX_IMAGE_BYTES = MAX_PACKET_BYTES - 256;
+    private static final int MAX_IMAGE_BYTES = MAX_PACKET_BYTES - 512;
     private static final int TYPE_HELLO = 1;
     private static final int TYPE_TEXT = 2;
     private static final int TYPE_IMAGE = 3;
@@ -61,6 +63,7 @@ public final class OfflineService extends Service {
     private final List<Client> clients = new CopyOnWriteArrayList<>();
     private volatile boolean running;
     private boolean serverMode;
+    private String username = "Kullanıcı";
     private String room = "Genel";
     private String password = "";
     private String serverName = "Sinyalce Sunucusu";
@@ -70,28 +73,36 @@ public final class OfflineService extends Service {
     private NotificationManager notifications;
     private WifiP2pManager p2pManager;
     private WifiP2pManager.Channel p2pChannel;
-    private SharedPreferences prefs;
+    private SharedPreferences sessionPrefs;
     private MessageStore store;
 
     @Override
     public void onCreate() {
         super.onCreate();
         notifications = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        sessionPrefs = getSharedPreferences(SESSION_PREFS, MODE_PRIVATE);
         store = new MessageStore(this);
         p2pManager = (WifiP2pManager) getSystemService(WIFI_P2P_SERVICE);
         if (p2pManager != null) {
             p2pChannel = p2pManager.initialize(this, getMainLooper(), () -> broadcastStatus("Wi‑Fi Direct service kanalı kesildi"));
         }
+        refreshUsername();
         createChannels();
+    }
+
+    private void refreshUsername() {
+        String value = getSharedPreferences(PROFILE_PREFS, MODE_PRIVATE).getString(NAME_KEY, "Kullanıcı");
+        username = value == null || value.trim().isEmpty() ? "Kullanıcı" : value.trim();
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        refreshUsername();
         if (intent == null) {
             restoreLastMode();
             return START_STICKY;
         }
+
         String action = intent.getAction();
         if (ACTION_STOP.equals(action)) {
             clearSavedSession();
@@ -101,6 +112,7 @@ public final class OfflineService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
+
         if (ACTION_START_SERVER.equals(action)) {
             serverMode = true;
             room = nonEmpty(intent.getStringExtra("room"), "Genel");
@@ -112,6 +124,7 @@ public final class OfflineService extends Service {
             startServer();
             return START_STICKY;
         }
+
         if (ACTION_START_CLIENT.equals(action)) {
             serverMode = false;
             room = nonEmpty(intent.getStringExtra("room"), "Genel");
@@ -122,15 +135,18 @@ public final class OfflineService extends Service {
             if (!host.isEmpty()) startClient(host);
             return START_STICKY;
         }
+
         if (ACTION_SEND_TEXT.equals(action)) {
             sendText(intent.getStringExtra(EXTRA_TEXT));
             return START_STICKY;
         }
+
         if (ACTION_SEND_IMAGE.equals(action)) {
             Uri uri = getUriExtra(intent);
             if (uri != null) new Thread(() -> sendImage(uri), "SinyalceImageSender").start();
             return START_STICKY;
         }
+
         return START_STICKY;
     }
 
@@ -140,17 +156,19 @@ public final class OfflineService extends Service {
     }
 
     private void restoreLastMode() {
-        String mode = prefs.getString("mode", "");
-        room = nonEmpty(prefs.getString("room", "Genel"), "Genel");
-        password = valueOrEmpty(prefs.getString("password", ""));
+        room = nonEmpty(sessionPrefs.getString("room", "Genel"), "Genel");
+        password = valueOrEmpty(sessionPrefs.getString("password", ""));
+        String mode = sessionPrefs.getString("mode", "");
         if ("server".equals(mode)) {
             serverMode = true;
-            serverName = nonEmpty(prefs.getString("server", "Sinyalce Sunucusu"), "Sinyalce Sunucusu");
+            serverName = nonEmpty(sessionPrefs.getString("server", "Sinyalce Sunucusu"), "Sinyalce Sunucusu");
+            refreshUsername();
             startForegroundNow("Sunucu yeniden başlatılıyor • " + room);
             startServer();
         } else if ("client".equals(mode)) {
             serverMode = false;
-            host = valueOrEmpty(prefs.getString("host", ""));
+            host = valueOrEmpty(sessionPrefs.getString("host", ""));
+            refreshUsername();
             if (!host.isEmpty()) {
                 startForegroundNow("Bağlantı yeniden kuruluyor • " + room);
                 startClient(host);
@@ -163,14 +181,16 @@ public final class OfflineService extends Service {
     }
 
     private void saveServerSession() {
-        prefs.edit().putString("mode", "server").putString("room", room).putString("password", password).putString("server", serverName).apply();
+        sessionPrefs.edit().putString("mode", "server").putString("room", room).putString("password", password).putString("server", serverName).apply();
     }
 
     private void saveClientSession() {
-        prefs.edit().putString("mode", "client").putString("room", room).putString("password", password).putString("host", host).apply();
+        sessionPrefs.edit().putString("mode", "client").putString("room", room).putString("password", password).putString("host", host).apply();
     }
 
-    private void clearSavedSession() { prefs.edit().clear().apply(); }
+    private void clearSavedSession() {
+        sessionPrefs.edit().clear().apply();
+    }
 
     private void createChannels() {
         if (Build.VERSION.SDK_INT < 26) return;
@@ -178,6 +198,7 @@ public final class OfflineService extends Service {
         service.setDescription("Aktif offline sunucu veya bağlantı");
         service.setShowBadge(false);
         notifications.createNotificationChannel(service);
+
         NotificationChannel message = new NotificationChannel(MESSAGE_CHANNEL, "Sinyalce mesajları", NotificationManager.IMPORTANCE_DEFAULT);
         message.setDescription("Uygulama arka plandayken gelen mesajlar");
         notifications.createNotificationChannel(message);
@@ -185,7 +206,8 @@ public final class OfflineService extends Service {
 
     private void startForegroundNow(String text) {
         Intent launch = new Intent(this, SinyalceActivity.class);
-        PendingIntent pending = PendingIntent.getActivity(this, 0, launch, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent pending = PendingIntent.getActivity(this, 0, launch,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         Notification.Builder builder = new Notification.Builder(this, SERVICE_CHANNEL)
                 .setSmallIcon(android.R.drawable.stat_sys_wifi)
                 .setContentTitle("Sinyalce")
@@ -255,7 +277,8 @@ public final class OfflineService extends Service {
                 socket.connect(new InetSocketAddress(targetHost, PORT), 10000);
                 clientConnection = new Client(socket);
                 clientConnection.start();
-                clientConnection.writePacket(TYPE_HELLO, (room + UNIT + password).getBytes(StandardCharsets.UTF_8));
+                String hello = username + UNIT + room + UNIT + password;
+                clientConnection.writePacket(TYPE_HELLO, hello.getBytes(StandardCharsets.UTF_8));
             } catch (Exception e) {
                 broadcastStatus("Bağlantı başarısız: " + safe(e));
             }
@@ -264,7 +287,8 @@ public final class OfflineService extends Service {
 
     private void sendText(String text) {
         if (text == null || text.trim().isEmpty()) return;
-        byte[] data = text.getBytes(StandardCharsets.UTF_8);
+        refreshUsername();
+        byte[] data = packText(username, text.trim());
         if (serverMode) {
             broadcastPacket(TYPE_TEXT, data, null);
         } else if (clientConnection != null && clientConnection.accepted) {
@@ -276,6 +300,7 @@ public final class OfflineService extends Service {
 
     private void sendImage(Uri uri) {
         try {
+            refreshUsername();
             String mime = getContentResolver().getType(uri);
             if (mime == null || !mime.startsWith("image/")) throw new IllegalStateException("Desteklenmeyen görsel türü");
             byte[] image;
@@ -283,7 +308,7 @@ public final class OfflineService extends Service {
                 if (in == null) throw new IllegalStateException("Görsel açılamadı");
                 image = readAll(in, MAX_IMAGE_BYTES);
             }
-            byte[] payload = joinUtf8(mime, image);
+            byte[] payload = packImage(username, mime, image);
             if (serverMode) {
                 broadcastPacket(TYPE_IMAGE, payload, null);
             } else if (clientConnection != null && clientConnection.accepted) {
@@ -299,21 +324,28 @@ public final class OfflineService extends Service {
     private void handlePacket(Client from, int type, byte[] payload) {
         if (type == TYPE_HELLO) {
             String[] parts = new String(payload, StandardCharsets.UTF_8).split(UNIT, -1);
-            String requestedRoom = parts.length > 0 ? parts[0] : "";
-            String requestedPassword = parts.length > 1 ? parts[1] : "";
             if (!serverMode) {
-                from.accepted = requestedRoom.equals(room) && "OK".equals(requestedPassword);
-                if (from.accepted) broadcastStatus("✅ Odaya bağlandı • " + room);
+                String server = parts.length > 0 ? parts[0] : "Sinyalce";
+                String serverRoom = parts.length > 1 ? parts[1] : room;
+                String result = parts.length > 2 ? parts[2] : "";
+                from.accepted = room.equals(serverRoom) && "OK".equals(result);
+                if (from.accepted) broadcastStatus("✅ " + server + " sunucusuna bağlandı • Oda: " + room);
+                else broadcastStatus("Sunucu doğrulaması başarısız");
                 return;
             }
+
+            String requestedName = parts.length > 0 ? nonEmpty(parts[0], "Kullanıcı") : "Kullanıcı";
+            String requestedRoom = parts.length > 1 ? parts[1] : "";
+            String requestedPassword = parts.length > 2 ? parts[2] : "";
             if (!room.equals(requestedRoom) || !password.equals(requestedPassword)) {
                 from.writePacket(TYPE_ERROR, "Oda adı veya şifre yanlış.".getBytes(StandardCharsets.UTF_8));
                 from.close();
                 return;
             }
             from.accepted = true;
-            from.writePacket(TYPE_HELLO, (room + UNIT + "OK").getBytes(StandardCharsets.UTF_8));
-            broadcastStatus("Yeni cihaz odaya katıldı");
+            from.remoteName = requestedName;
+            from.writePacket(TYPE_HELLO, (serverName + UNIT + room + UNIT + "OK").getBytes(StandardCharsets.UTF_8));
+            broadcastStatus("✅ " + requestedName + " odaya katıldı");
             return;
         }
 
@@ -324,15 +356,19 @@ public final class OfflineService extends Service {
         if (!from.accepted) return;
 
         if (type == TYPE_TEXT) {
-            String value = new String(payload, StandardCharsets.UTF_8);
+            ParsedText parsed = parseText(payload);
+            String display = parsed.name + ": " + parsed.text;
             if (serverMode) broadcastPacket(TYPE_TEXT, payload, from);
-            persistIncomingText(value);
-            notifyIncomingText(value);
+            persistIncomingText(display);
+            notifyIncomingText(display);
         } else if (type == TYPE_IMAGE) {
             try {
                 ParsedImage image = parseImage(payload);
                 Uri saved = saveIncomingImage(image.mime, image.bytes);
                 if (serverMode) broadcastPacket(TYPE_IMAGE, payload, from);
+                String display = image.name + " • 📷 Görsel gönderdi";
+                persistIncomingText(display);
+                notifyIncomingText(display);
                 persistIncomingImage(saved);
                 notifyIncomingImage(saved);
             } catch (Exception e) {
@@ -341,18 +377,166 @@ public final class OfflineService extends Service {
         }
     }
 
-    private void persistIncomingText(String value) {
-        if (!AppState.isForeground()) store.addText(value, room, true, System.currentTimeMillis());
+    private void persistIncomingText(String display) {
+        if (!AppState.isForeground()) store.addText(display, room, true, System.currentTimeMillis());
     }
 
     private void persistIncomingImage(Uri uri) {
         if (!AppState.isForeground()) store.addImage(uri.toString(), room, true, System.currentTimeMillis());
     }
 
+    private void notifyIncomingText(String display) {
+        broadcast(ACTION_TEXT, i -> i.putExtra(EXTRA_TEXT, display).putExtra(EXTRA_ROOM, room));
+        if (!AppState.isForeground()) showMessageNotification(display);
+    }
+
+    private void notifyIncomingImage(Uri uri) {
+        broadcast(ACTION_IMAGE, i -> {
+            i.putExtra(EXTRA_URI, uri);
+            i.putExtra(EXTRA_ROOM, room);
+        });
+    }
+
     private void broadcastPacket(int type, byte[] payload, Client except) {
         for (Client client : clients) {
             if (client != except && client.accepted) client.writePacket(type, payload);
         }
+    }
+
+    private void showMessageNotification(String text) {
+        Intent launch = new Intent(this, SinyalceActivity.class);
+        PendingIntent pending = PendingIntent.getActivity(this, 1, launch, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Notification.Builder builder = new Notification.Builder(this, MESSAGE_CHANNEL)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle(room)
+                .setContentText(text)
+                .setAutoCancel(true)
+                .setContentIntent(pending);
+        notifications.notify(MESSAGE_NOTIFICATION, builder.build());
+    }
+
+    private void broadcastStatus(String text) {
+        broadcast(ACTION_STATUS, i -> i.putExtra(EXTRA_STATUS, text).putExtra(EXTRA_ROOM, room));
+        startForegroundNow(text);
+    }
+
+    private interface Editor { void edit(Intent intent); }
+
+    private void broadcast(String action, Editor editor) {
+        Intent i = new Intent(action).setPackage(getPackageName());
+        editor.edit(i);
+        sendBroadcast(i);
+    }
+
+    private void stopNetworking() {
+        running = false;
+        if (serverSocket != null) {
+            try { serverSocket.close(); } catch (Exception ignored) {}
+            serverSocket = null;
+        }
+        for (Client client : clients) client.close();
+        clients.clear();
+        if (clientConnection != null) {
+            clientConnection.close();
+            clientConnection = null;
+        }
+    }
+
+    @Override
+    public void onDestroy() {
+        stopNetworking();
+        if (store != null) store.close();
+        super.onDestroy();
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) { return null; }
+
+    private final class Client {
+        final Socket socket;
+        final DataInputStream in;
+        final DataOutputStream out;
+        volatile boolean accepted;
+        volatile String remoteName = "Kullanıcı";
+
+        Client(Socket socket) throws Exception {
+            this.socket = socket;
+            this.in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
+            this.out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+        }
+
+        void start() {
+            Thread reader = new Thread(() -> {
+                try {
+                    while (running && !socket.isClosed()) {
+                        int type = in.readInt();
+                        int length = in.readInt();
+                        if (length <= 0 || length > MAX_PACKET_BYTES) throw new IllegalStateException("Geçersiz paket boyutu");
+                        byte[] payload = new byte[length];
+                        in.readFully(payload);
+                        handlePacket(this, type, payload);
+                    }
+                } catch (Exception ignored) {
+                } finally {
+                    close();
+                }
+            }, "SinyalceReader");
+            reader.start();
+        }
+
+        synchronized void writePacket(int type, byte[] payload) {
+            if (socket.isClosed()) return;
+            try {
+                out.writeInt(type);
+                out.writeInt(payload.length);
+                out.write(payload);
+                out.flush();
+            } catch (Exception e) {
+                close();
+            }
+        }
+
+        void close() {
+            try { socket.close(); } catch (Exception ignored) {}
+            clients.remove(this);
+            if (this == clientConnection) clientConnection = null;
+        }
+    }
+
+    private static byte[] packText(String name, String text) {
+        return (nonEmpty(name, "Kullanıcı") + UNIT + text).getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static ParsedText parseText(byte[] payload) {
+        String raw = new String(payload, StandardCharsets.UTF_8);
+        int cut = raw.indexOf(UNIT);
+        if (cut < 0) return new ParsedText("Kullanıcı", raw);
+        return new ParsedText(nonEmpty(raw.substring(0, cut), "Kullanıcı"), raw.substring(cut + UNIT.length()));
+    }
+
+    private static byte[] packImage(String name, String mime, byte[] image) {
+        byte[] meta = (nonEmpty(name, "Kullanıcı") + UNIT + mime + UNIT).getBytes(StandardCharsets.UTF_8);
+        byte[] result = new byte[meta.length + image.length];
+        System.arraycopy(meta, 0, result, 0, meta.length);
+        System.arraycopy(image, 0, result, meta.length, image.length);
+        return result;
+    }
+
+    private static ParsedImage parseImage(byte[] payload) {
+        int first = indexOf(payload, (byte) 0x1F, 0);
+        int second = indexOf(payload, (byte) 0x1F, first + 1);
+        if (first <= 0 || second <= first + 1) throw new IllegalStateException("Görsel üstbilgisi bozuk");
+        String name = new String(payload, 0, first, StandardCharsets.UTF_8);
+        String mime = new String(payload, first + 1, second - first - 1, StandardCharsets.UTF_8);
+        byte[] bytes = new byte[payload.length - second - 1];
+        System.arraycopy(payload, second + 1, bytes, 0, bytes.length);
+        if (bytes.length > MAX_IMAGE_BYTES) throw new IllegalStateException("Görsel çok büyük");
+        return new ParsedImage(nonEmpty(name, "Kullanıcı"), mime, bytes);
+    }
+
+    private static int indexOf(byte[] data, byte value, int start) {
+        for (int i = Math.max(0, start); i < data.length; i++) if (data[i] == value) return i;
+        return -1;
     }
 
     private Uri saveIncomingImage(String mime, byte[] bytes) throws Exception {
@@ -379,152 +563,41 @@ public final class OfflineService extends Service {
         return uri;
     }
 
-    private void notifyIncomingText(String text) {
-        broadcast(ACTION_TEXT, i -> i.putExtra(EXTRA_TEXT, text).putExtra(EXTRA_ROOM, room));
-        if (!AppState.isForeground()) showMessageNotification(text);
-    }
-
-    private void notifyIncomingImage(Uri uri) {
-        broadcast(ACTION_IMAGE, i -> i.putExtra(EXTRA_URI, uri).putExtra(EXTRA_ROOM, room));
-        if (!AppState.isForeground()) showMessageNotification("📷 Görsel gönderildi");
-    }
-
-    private void showMessageNotification(String value) {
-        Intent launch = new Intent(this, SinyalceActivity.class);
-        PendingIntent pending = PendingIntent.getActivity(this, 1, launch, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        Notification.Builder builder = new Notification.Builder(this, MESSAGE_CHANNEL)
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle(room)
-                .setContentText(value)
-                .setAutoCancel(true)
-                .setContentIntent(pending);
-        notifications.notify(MESSAGE_NOTIFICATION, builder.build());
-    }
-
-    private void broadcastStatus(String text) {
-        broadcast(ACTION_STATUS, i -> i.putExtra(EXTRA_STATUS, text).putExtra(EXTRA_ROOM, room));
-        if (running) startForegroundNow(text);
-    }
-
-    private interface IntentEditor { void edit(Intent intent); }
-    private void broadcast(String action, IntentEditor editor) {
-        Intent intent = new Intent(action);
-        intent.setPackage(getPackageName());
-        editor.edit(intent);
-        sendBroadcast(intent);
-    }
-
-    private void stopNetworking() {
-        running = false;
-        if (serverSocket != null) {
-            try { serverSocket.close(); } catch (Exception ignored) {}
-            serverSocket = null;
-        }
-        for (Client client : clients) client.close();
-        clients.clear();
-        if (clientConnection != null) {
-            clientConnection.close();
-            clientConnection = null;
-        }
-    }
-
-    @Override public void onDestroy() {
-        stopNetworking();
-        if (store != null) store.close();
-        super.onDestroy();
-    }
-
-    @Override public IBinder onBind(Intent intent) { return null; }
-
-    private final class Client {
-        private final Socket socket;
-        private final DataInputStream input;
-        private final DataOutputStream output;
-        private volatile boolean accepted;
-
-        Client(Socket socket) throws Exception {
-            this.socket = socket;
-            this.input = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
-            this.output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-        }
-
-        void start() {
-            new Thread(() -> {
-                try {
-                    while (running && !socket.isClosed()) {
-                        int type = input.readInt();
-                        int length = input.readInt();
-                        if (length <= 0 || length > MAX_PACKET_BYTES) throw new IllegalStateException("Geçersiz paket boyutu");
-                        byte[] payload = new byte[length];
-                        input.readFully(payload);
-                        handlePacket(this, type, payload);
-                    }
-                } catch (Exception ignored) {
-                } finally {
-                    close();
-                }
-            }, "SinyalceReader").start();
-        }
-
-        synchronized void writePacket(int type, byte[] payload) {
-            if (payload == null || payload.length > MAX_PACKET_BYTES || socket.isClosed()) return;
-            try {
-                output.writeInt(type);
-                output.writeInt(payload.length);
-                output.write(payload);
-                output.flush();
-            } catch (Exception e) {
-                close();
-            }
-        }
-
-        void close() {
-            try { socket.close(); } catch (Exception ignored) {}
-            if (serverMode) clients.remove(this);
-            if (!serverMode && this == clientConnection) clientConnection = null;
-        }
-    }
-
     private static byte[] readAll(InputStream in, int max) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         byte[] buffer = new byte[8192];
         int total = 0;
-        int count;
-        while ((count = in.read(buffer)) != -1) {
-            total += count;
-            if (total > max) throw new IllegalStateException("Görsel boyutu sınırı aşıldı");
-            out.write(buffer, 0, count);
+        int n;
+        while ((n = in.read(buffer)) != -1) {
+            total += n;
+            if (total > max) throw new IllegalStateException("Dosya çok büyük");
+            out.write(buffer, 0, n);
         }
         return out.toByteArray();
     }
 
-    private static byte[] joinUtf8(String mime, byte[] bytes) {
-        byte[] meta = (mime + UNIT).getBytes(StandardCharsets.UTF_8);
-        byte[] result = new byte[meta.length + bytes.length];
-        System.arraycopy(meta, 0, result, 0, meta.length);
-        System.arraycopy(bytes, 0, result, meta.length, bytes.length);
-        return result;
-    }
-
-    private static ParsedImage parseImage(byte[] payload) {
-        int separator = -1;
-        for (int i = 0; i < payload.length; i++) {
-            if (payload[i] == 0x1F) { separator = i; break; }
-        }
-        if (separator <= 0 || separator >= payload.length - 1) throw new IllegalStateException("Görsel paketi bozuk");
-        String mime = new String(payload, 0, separator, StandardCharsets.UTF_8);
-        byte[] bytes = new byte[payload.length - separator - 1];
-        System.arraycopy(payload, separator + 1, bytes, 0, bytes.length);
-        return new ParsedImage(mime, bytes);
+    private static final class ParsedText {
+        final String name;
+        final String text;
+        ParsedText(String name, String text) { this.name = name; this.text = text; }
     }
 
     private static final class ParsedImage {
+        final String name;
         final String mime;
         final byte[] bytes;
-        ParsedImage(String mime, byte[] bytes) { this.mime = mime; this.bytes = bytes; }
+        ParsedImage(String name, String mime, byte[] bytes) { this.name = name; this.mime = mime; this.bytes = bytes; }
     }
 
-    private static String nonEmpty(String value, String fallback) { return value == null || value.trim().isEmpty() ? fallback : value.trim(); }
-    private static String valueOrEmpty(String value) { return value == null ? "" : value; }
-    private static String safe(Exception e) { return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
+    private static String nonEmpty(String value, String fallback) {
+        return value == null || value.trim().isEmpty() ? fallback : value.trim();
+    }
+
+    private static String valueOrEmpty(String value) {
+        return value == null ? "" : value;
+    }
+
+    private static String safe(Exception e) {
+        return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+    }
 }
