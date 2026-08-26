@@ -1,1 +1,4 @@
-Build check for the hardened Sinyalce service.
+Sinyalce Android build verification trigger.
+Fixed compile errors:
+- MessageStore no longer calls nonexistent getContext().
+- OfflineService uses a valid Android notification icon.
