@@ -85,7 +85,6 @@ public final class SinyalceActivity extends Activity {
         super.onStart();
         AppState.setForeground(true);
         registerReceivers();
-        requestConnectionInfo();
     }
 
     @Override
