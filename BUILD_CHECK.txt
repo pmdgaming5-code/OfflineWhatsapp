@@ -1,4 +1,3 @@
 Sinyalce Android build verification trigger.
-Fixed compile errors:
-- MessageStore no longer calls nonexistent getContext().
-- OfflineService uses a valid Android notification icon.
+Offline messaging refactor is on main.
+CI must execute clean assembleDebug and verify app-debug.apk.
