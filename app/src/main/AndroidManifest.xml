@@ -1,10 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Required for Wi-Fi Direct local sockets. It does not imply that the app needs Internet access. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
     <uses-permission
         android:name="android.permission.NEARBY_WIFI_DEVICES"
@@ -23,19 +25,28 @@
 
     <application
         android:allowBackup="true"
-        android:label="OfflineWhatsapp"
+        android:label="Sinyalce"
         android:supportsRtl="true"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="true">
 
         <activity
-            android:name=".MainActivity"
+            android:name=".SinyalceActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-    </application>
 
+        <activity
+            android:name=".MainActivity"
+            android:exported="false" />
+
+        <service
+            android:name=".OfflineService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="connectedDevice" />
+    </application>
 </manifest>
