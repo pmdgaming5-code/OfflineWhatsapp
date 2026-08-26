@@ -15,6 +15,8 @@ public final class MessageStore extends SQLiteOpenHelper {
     private static final String PROFILE_PREFS = "sinyalce_profile";
     private static final String NAME_KEY = "name";
 
+    private final Context appContext;
+
     public static final class Message {
         public final long id;
         public final String kind;
@@ -36,7 +38,8 @@ public final class MessageStore extends SQLiteOpenHelper {
     }
 
     public MessageStore(Context context) {
-        super(context, DB_NAME, null, DB_VERSION);
+        super(context.getApplicationContext(), DB_NAME, null, DB_VERSION);
+        this.appContext = context.getApplicationContext();
     }
 
     @Override
@@ -56,7 +59,7 @@ public final class MessageStore extends SQLiteOpenHelper {
     public synchronized void addText(String text, String room, boolean incoming, long time) {
         String stored = text;
         if (!incoming) {
-            String name = getContext().getSharedPreferences(PROFILE_PREFS, Context.MODE_PRIVATE).getString(NAME_KEY, "Kullanıcı");
+            String name = appContext.getSharedPreferences(PROFILE_PREFS, Context.MODE_PRIVATE).getString(NAME_KEY, "Kullanıcı");
             if (name == null || name.trim().isEmpty()) name = "Kullanıcı";
             stored = name.trim() + ": " + (text == null ? "" : text);
         }
@@ -67,7 +70,6 @@ public final class MessageStore extends SQLiteOpenHelper {
         add("image", null, uri, room, incoming, time);
     }
 
-    // Compatibility helper for older activity code.
     public synchronized void add(String text, boolean incoming, long time) {
         addText(text, "Genel", incoming, time);
     }
