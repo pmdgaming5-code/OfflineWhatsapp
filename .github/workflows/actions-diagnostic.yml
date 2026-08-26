@@ -1,0 +1,15 @@
+name: Actions Diagnostic
+
+on:
+  push:
+    branches: [ "actions-diagnostic" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Diagnostic
+        run: echo "GitHub Actions trigger reached the runner successfully"
