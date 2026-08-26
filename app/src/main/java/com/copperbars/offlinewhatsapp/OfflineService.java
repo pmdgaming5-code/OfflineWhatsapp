@@ -7,7 +7,6 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.ContentResolver;
 import android.content.ContentValues;
-import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
@@ -46,21 +45,18 @@ public final class OfflineService extends Service {
     public static final String EXTRA_STATUS = "status";
 
     private static final String PREFS = "sinyalce_service";
-    private static final String P_MODE = "mode";
-    private static final String P_ROOM = "room";
-    private static final String P_PASSWORD = "password";
-    private static final String P_SERVER = "server";
-    private static final String P_HOST = "host";
-    private static final String SERVICE_CHANNEL = "service";
-    private static final String MESSAGE_CHANNEL = "message";
-    private static final int SERVICE_NOTIFICATION = 4101;
-    private static final int MESSAGE_NOTIFICATION = 4102;
     private static final int PORT = 45821;
-    private static final int MAX_PACKET = 12 * 1024 * 1024;
+    private static final int MAX_PACKET_BYTES = 12 * 1024 * 1024;
+    private static final int MAX_IMAGE_BYTES = MAX_PACKET_BYTES - 256;
     private static final int TYPE_HELLO = 1;
     private static final int TYPE_TEXT = 2;
     private static final int TYPE_IMAGE = 3;
     private static final int TYPE_ERROR = 4;
+    private static final String UNIT = "\u001F";
+    private static final String SERVICE_CHANNEL = "service";
+    private static final String MESSAGE_CHANNEL = "message";
+    private static final int SERVICE_NOTIFICATION = 4101;
+    private static final int MESSAGE_NOTIFICATION = 4102;
 
     private final List<Client> clients = new CopyOnWriteArrayList<>();
     private volatile boolean running;
@@ -68,21 +64,24 @@ public final class OfflineService extends Service {
     private String room = "Genel";
     private String password = "";
     private String serverName = "Sinyalce Sunucusu";
+    private String host = "";
     private ServerSocket serverSocket;
     private Client clientConnection;
-    private NotificationManager notificationManager;
-    private WifiP2pManager wifiP2pManager;
-    private WifiP2pManager.Channel wifiChannel;
+    private NotificationManager notifications;
+    private WifiP2pManager p2pManager;
+    private WifiP2pManager.Channel p2pChannel;
     private SharedPreferences prefs;
+    private MessageStore store;
 
     @Override
     public void onCreate() {
         super.onCreate();
-        notificationManager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        notifications = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        wifiP2pManager = (WifiP2pManager) getSystemService(WIFI_P2P_SERVICE);
-        if (wifiP2pManager != null) {
-            wifiChannel = wifiP2pManager.initialize(this, getMainLooper(), () -> broadcastStatus("Wi‑Fi Direct service kanalı kesildi"));
+        store = new MessageStore(this);
+        p2pManager = (WifiP2pManager) getSystemService(WIFI_P2P_SERVICE);
+        if (p2pManager != null) {
+            p2pChannel = p2pManager.initialize(this, getMainLooper(), () -> broadcastStatus("Wi‑Fi Direct service kanalı kesildi"));
         }
         createChannels();
     }
@@ -95,7 +94,7 @@ public final class OfflineService extends Service {
         }
         String action = intent.getAction();
         if (ACTION_STOP.equals(action)) {
-            prefs.edit().clear().apply();
+            clearSavedSession();
             stopNetworking();
             stopWifiGroup();
             stopForeground(STOP_FOREGROUND_REMOVE);
@@ -105,23 +104,22 @@ public final class OfflineService extends Service {
         if (ACTION_START_SERVER.equals(action)) {
             serverMode = true;
             room = nonEmpty(intent.getStringExtra("room"), "Genel");
-            password = intent.getStringExtra("password");
-            if (password == null) password = "";
+            password = valueOrEmpty(intent.getStringExtra("password"));
             serverName = nonEmpty(intent.getStringExtra("serverName"), "Sinyalce Sunucusu");
-            prefs.edit().putString(P_MODE, "server").putString(P_ROOM, room).putString(P_PASSWORD, password).putString(P_SERVER, serverName).apply();
-            startForegroundNow("Sunucu aktifleşiyor • " + room);
+            host = "";
+            saveServerSession();
+            startForegroundNow("Sunucu hazırlanıyor • " + room);
             startServer();
             return START_STICKY;
         }
         if (ACTION_START_CLIENT.equals(action)) {
             serverMode = false;
-            String host = intent.getStringExtra("host");
             room = nonEmpty(intent.getStringExtra("room"), "Genel");
-            password = intent.getStringExtra("password");
-            if (password == null) password = "";
-            prefs.edit().putString(P_MODE, "client").putString(P_ROOM, room).putString(P_PASSWORD, password).putString(P_HOST, host == null ? "" : host).apply();
+            password = valueOrEmpty(intent.getStringExtra("password"));
+            host = valueOrEmpty(intent.getStringExtra("host"));
+            saveClientSession();
             startForegroundNow("Bağlanıyor • " + room);
-            if (host != null && !host.isEmpty()) startClient(host);
+            if (!host.isEmpty()) startClient(host);
             return START_STICKY;
         }
         if (ACTION_SEND_TEXT.equals(action)) {
@@ -129,41 +127,60 @@ public final class OfflineService extends Service {
             return START_STICKY;
         }
         if (ACTION_SEND_IMAGE.equals(action)) {
-            Uri uri = intent.getParcelableExtra(EXTRA_URI);
+            Uri uri = getUriExtra(intent);
             if (uri != null) new Thread(() -> sendImage(uri), "SinyalceImageSender").start();
             return START_STICKY;
         }
         return START_STICKY;
     }
 
+    private Uri getUriExtra(Intent intent) {
+        if (Build.VERSION.SDK_INT >= 33) return intent.getParcelableExtra(EXTRA_URI, Uri.class);
+        return intent.getParcelableExtra(EXTRA_URI);
+    }
+
     private void restoreLastMode() {
-        String mode = prefs.getString(P_MODE, "");
-        room = nonEmpty(prefs.getString(P_ROOM, "Genel"), "Genel");
-        password = prefs.getString(P_PASSWORD, "");
+        String mode = prefs.getString("mode", "");
+        room = nonEmpty(prefs.getString("room", "Genel"), "Genel");
+        password = valueOrEmpty(prefs.getString("password", ""));
         if ("server".equals(mode)) {
             serverMode = true;
-            serverName = nonEmpty(prefs.getString(P_SERVER, "Sinyalce Sunucusu"), "Sinyalce Sunucusu");
+            serverName = nonEmpty(prefs.getString("server", "Sinyalce Sunucusu"), "Sinyalce Sunucusu");
             startForegroundNow("Sunucu yeniden başlatılıyor • " + room);
             startServer();
         } else if ("client".equals(mode)) {
             serverMode = false;
-            String host = prefs.getString(P_HOST, "");
+            host = valueOrEmpty(prefs.getString("host", ""));
             if (!host.isEmpty()) {
                 startForegroundNow("Bağlantı yeniden kuruluyor • " + room);
                 startClient(host);
-            } else stopSelf();
-        } else stopSelf();
+            } else {
+                stopSelf();
+            }
+        } else {
+            stopSelf();
+        }
     }
+
+    private void saveServerSession() {
+        prefs.edit().putString("mode", "server").putString("room", room).putString("password", password).putString("server", serverName).apply();
+    }
+
+    private void saveClientSession() {
+        prefs.edit().putString("mode", "client").putString("room", room).putString("password", password).putString("host", host).apply();
+    }
+
+    private void clearSavedSession() { prefs.edit().clear().apply(); }
 
     private void createChannels() {
         if (Build.VERSION.SDK_INT < 26) return;
         NotificationChannel service = new NotificationChannel(SERVICE_CHANNEL, "Sinyalce bağlantısı", NotificationManager.IMPORTANCE_LOW);
         service.setDescription("Aktif offline sunucu veya bağlantı");
         service.setShowBadge(false);
-        notificationManager.createNotificationChannel(service);
+        notifications.createNotificationChannel(service);
         NotificationChannel message = new NotificationChannel(MESSAGE_CHANNEL, "Sinyalce mesajları", NotificationManager.IMPORTANCE_DEFAULT);
         message.setDescription("Uygulama arka plandayken gelen mesajlar");
-        notificationManager.createNotificationChannel(message);
+        notifications.createNotificationChannel(message);
     }
 
     private void startForegroundNow(String text) {
@@ -177,24 +194,31 @@ public final class OfflineService extends Service {
                 .setOngoing(true)
                 .setCategory(Notification.CATEGORY_SERVICE);
         if (Build.VERSION.SDK_INT >= 31) builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE);
-        if (Build.VERSION.SDK_INT >= 29) startForeground(SERVICE_NOTIFICATION, builder.build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
-        else startForeground(SERVICE_NOTIFICATION, builder.build());
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(SERVICE_NOTIFICATION, builder.build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+        } else {
+            startForeground(SERVICE_NOTIFICATION, builder.build());
+        }
     }
 
     private void startServer() {
         stopNetworking();
         running = true;
-        try { serverSocket = new ServerSocket(PORT); }
-        catch (Exception e) { broadcastStatus("Sunucu socket açılamadı: " + safe(e)); return; }
+        try {
+            serverSocket = new ServerSocket(PORT);
+        } catch (Exception e) {
+            broadcastStatus("Sunucu socket açılamadı: " + safe(e));
+            return;
+        }
         ensureWifiGroup();
         broadcastStatus("SUNUCU AKTİF • " + serverName + " • Oda: " + room);
         new Thread(() -> {
             while (running) {
                 try {
                     Socket socket = serverSocket.accept();
-                    Client c = new Client(socket);
-                    clients.add(c);
-                    c.start();
+                    Client client = new Client(socket);
+                    clients.add(client);
+                    client.start();
                 } catch (Exception e) {
                     if (running) broadcastStatus("Sunucu bağlantı hatası: " + safe(e));
                 }
@@ -203,106 +227,132 @@ public final class OfflineService extends Service {
     }
 
     private void ensureWifiGroup() {
-        if (wifiP2pManager == null || wifiChannel == null) return;
+        if (p2pManager == null || p2pChannel == null) return;
         try {
-            wifiP2pManager.removeGroup(wifiChannel, new WifiP2pManager.ActionListener() {
-                @Override public void onSuccess() { createWifiGroup(); }
-                @Override public void onFailure(int reason) { createWifiGroup(); }
-            });
-        } catch (Exception e) { createWifiGroup(); }
-    }
-
-    private void createWifiGroup() {
-        if (!running || !serverMode || wifiP2pManager == null || wifiChannel == null) return;
-        try {
-            wifiP2pManager.createGroup(wifiChannel, new WifiP2pManager.ActionListener() {
+            p2pManager.createGroup(p2pChannel, new WifiP2pManager.ActionListener() {
                 @Override public void onSuccess() { broadcastStatus("✅ Wi‑Fi Direct grubu aktif • Oda: " + room); }
-                @Override public void onFailure(int reason) { broadcastStatus("Wi‑Fi Direct grubu açılamadı: kod " + reason); }
+                @Override public void onFailure(int reason) {
+                    if (reason == WifiP2pManager.BUSY) broadcastStatus("Wi‑Fi Direct zaten meşgul • mevcut yerel grup kullanılabilir");
+                    else broadcastStatus("Wi‑Fi Direct grubu açılamadı: " + reason);
+                }
             });
-        } catch (Exception e) { broadcastStatus("Wi‑Fi Direct grubu açılamadı: " + safe(e)); }
-    }
-
-    private void stopWifiGroup() {
-        if (wifiP2pManager != null && wifiChannel != null) {
-            try { wifiP2pManager.removeGroup(wifiChannel, null); } catch (Exception ignored) {}
+        } catch (SecurityException e) {
+            broadcastStatus("Yakındaki Cihazlar izni gerekli");
         }
     }
 
-    private void startClient(String host) {
+    private void stopWifiGroup() {
+        if (p2pManager == null || p2pChannel == null) return;
+        try { p2pManager.removeGroup(p2pChannel, null); } catch (Exception ignored) {}
+    }
+
+    private void startClient(String targetHost) {
         stopNetworking();
         running = true;
         new Thread(() -> {
             try {
                 Socket socket = new Socket();
-                socket.connect(new InetSocketAddress(host, PORT), 10000);
+                socket.connect(new InetSocketAddress(targetHost, PORT), 10000);
                 clientConnection = new Client(socket);
                 clientConnection.start();
-            } catch (Exception e) { broadcastStatus("Bağlantı başarısız: " + safe(e)); }
+                clientConnection.writePacket(TYPE_HELLO, (room + UNIT + password).getBytes(StandardCharsets.UTF_8));
+            } catch (Exception e) {
+                broadcastStatus("Bağlantı başarısız: " + safe(e));
+            }
         }, "SinyalceClient").start();
     }
 
     private void sendText(String text) {
         if (text == null || text.trim().isEmpty()) return;
         byte[] data = text.getBytes(StandardCharsets.UTF_8);
-        if (serverMode) broadcastPacket(TYPE_TEXT, data, null);
-        else if (clientConnection != null) clientConnection.writePacket(TYPE_TEXT, data);
-        else broadcastStatus("Mesaj gönderilemedi • bağlı cihaz yok");
+        if (serverMode) {
+            broadcastPacket(TYPE_TEXT, data, null);
+        } else if (clientConnection != null && clientConnection.accepted) {
+            clientConnection.writePacket(TYPE_TEXT, data);
+        } else {
+            broadcastStatus("Mesaj gönderilemedi • bağlantı yok");
+        }
     }
 
     private void sendImage(Uri uri) {
-        try (InputStream in = getContentResolver().openInputStream(uri)) {
-            if (in == null) throw new IllegalStateException("Görsel açılamadı");
+        try {
             String mime = getContentResolver().getType(uri);
             if (mime == null || !mime.startsWith("image/")) throw new IllegalStateException("Desteklenmeyen görsel türü");
-            byte[] image = readAll(in, MAX_PACKET);
+            byte[] image;
+            try (InputStream in = getContentResolver().openInputStream(uri)) {
+                if (in == null) throw new IllegalStateException("Görsel açılamadı");
+                image = readAll(in, MAX_IMAGE_BYTES);
+            }
             byte[] payload = joinUtf8(mime, image);
-            if (serverMode) broadcastPacket(TYPE_IMAGE, payload, null);
-            else if (clientConnection != null) clientConnection.writePacket(TYPE_IMAGE, payload);
-            else throw new IllegalStateException("Bağlantı yok");
-        } catch (Exception e) { broadcastStatus("Görsel gönderilemedi: " + safe(e)); }
+            if (serverMode) {
+                broadcastPacket(TYPE_IMAGE, payload, null);
+            } else if (clientConnection != null && clientConnection.accepted) {
+                clientConnection.writePacket(TYPE_IMAGE, payload);
+            } else {
+                throw new IllegalStateException("Bağlantı yok");
+            }
+        } catch (Exception e) {
+            broadcastStatus("Görsel gönderilemedi: " + safe(e));
+        }
     }
 
     private void handlePacket(Client from, int type, byte[] payload) {
         if (type == TYPE_HELLO) {
-            String[] p = new String(payload, StandardCharsets.UTF_8).split("\\u001F", -1);
-            String requestedRoom = p.length > 0 ? p[0] : "";
-            String requestedPassword = p.length > 1 ? p[1] : "";
-            if (serverMode) {
-                if (!room.equals(requestedRoom) || !password.equals(requestedPassword)) {
-                    from.writePacket(TYPE_ERROR, "Oda adı veya şifre yanlış.".getBytes(StandardCharsets.UTF_8));
-                    from.close();
-                    return;
-                }
-                from.accepted = true;
-                from.writePacket(TYPE_HELLO, (room + "\u001FOK").getBytes(StandardCharsets.UTF_8));
-                broadcastStatus("Yeni cihaz odaya katıldı");
-            } else {
-                from.accepted = true;
-                broadcastStatus("✅ Odaya bağlandı • " + room);
+            String[] parts = new String(payload, StandardCharsets.UTF_8).split(UNIT, -1);
+            String requestedRoom = parts.length > 0 ? parts[0] : "";
+            String requestedPassword = parts.length > 1 ? parts[1] : "";
+            if (!serverMode) {
+                from.accepted = requestedRoom.equals(room) && "OK".equals(requestedPassword);
+                if (from.accepted) broadcastStatus("✅ Odaya bağlandı • " + room);
+                return;
             }
+            if (!room.equals(requestedRoom) || !password.equals(requestedPassword)) {
+                from.writePacket(TYPE_ERROR, "Oda adı veya şifre yanlış.".getBytes(StandardCharsets.UTF_8));
+                from.close();
+                return;
+            }
+            from.accepted = true;
+            from.writePacket(TYPE_HELLO, (room + UNIT + "OK").getBytes(StandardCharsets.UTF_8));
+            broadcastStatus("Yeni cihaz odaya katıldı");
             return;
         }
+
         if (type == TYPE_ERROR) {
             broadcastStatus(new String(payload, StandardCharsets.UTF_8));
             return;
         }
-        if (!from.accepted && serverMode) return;
+        if (!from.accepted) return;
+
         if (type == TYPE_TEXT) {
             String value = new String(payload, StandardCharsets.UTF_8);
             if (serverMode) broadcastPacket(TYPE_TEXT, payload, from);
+            persistIncomingText(value);
             notifyIncomingText(value);
         } else if (type == TYPE_IMAGE) {
             try {
-                ParsedImage p = parseImage(payload);
-                Uri saved = saveIncomingImage(p.mime, p.bytes);
+                ParsedImage image = parseImage(payload);
+                Uri saved = saveIncomingImage(image.mime, image.bytes);
                 if (serverMode) broadcastPacket(TYPE_IMAGE, payload, from);
+                persistIncomingImage(saved);
                 notifyIncomingImage(saved);
-            } catch (Exception e) { broadcastStatus("Görsel alınamadı: " + safe(e)); }
+            } catch (Exception e) {
+                broadcastStatus("Görsel alınamadı: " + safe(e));
+            }
         }
     }
 
+    private void persistIncomingText(String value) {
+        if (!AppState.isForeground()) store.addText(value, room, true, System.currentTimeMillis());
+    }
+
+    private void persistIncomingImage(Uri uri) {
+        if (!AppState.isForeground()) store.addImage(uri.toString(), room, true, System.currentTimeMillis());
+    }
+
     private void broadcastPacket(int type, byte[] payload, Client except) {
-        for (Client c : clients) if (c != except && c.accepted) c.writePacket(type, payload);
+        for (Client client : clients) {
+            if (client != except && client.accepted) client.writePacket(type, payload);
+        }
     }
 
     private Uri saveIncomingImage(String mime, byte[] bytes) throws Exception {
@@ -329,9 +379,9 @@ public final class OfflineService extends Service {
         return uri;
     }
 
-    private void notifyIncomingText(String value) {
-        broadcast(ACTION_TEXT, i -> i.putExtra(EXTRA_TEXT, value).putExtra(EXTRA_ROOM, room));
-        if (!AppState.isForeground()) showMessageNotification(value);
+    private void notifyIncomingText(String text) {
+        broadcast(ACTION_TEXT, i -> i.putExtra(EXTRA_TEXT, text).putExtra(EXTRA_ROOM, room));
+        if (!AppState.isForeground()) showMessageNotification(text);
     }
 
     private void notifyIncomingImage(Uri uri) {
@@ -342,77 +392,92 @@ public final class OfflineService extends Service {
     private void showMessageNotification(String value) {
         Intent launch = new Intent(this, SinyalceActivity.class);
         PendingIntent pending = PendingIntent.getActivity(this, 1, launch, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        Notification notification = new Notification.Builder(this, MESSAGE_CHANNEL)
+        Notification.Builder builder = new Notification.Builder(this, MESSAGE_CHANNEL)
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setContentTitle(room)
                 .setContentText(value)
                 .setAutoCancel(true)
-                .setContentIntent(pending)
-                .build();
-        notificationManager.notify(MESSAGE_NOTIFICATION, notification);
+                .setContentIntent(pending);
+        notifications.notify(MESSAGE_NOTIFICATION, builder.build());
     }
 
-    private void broadcastStatus(String value) {
-        broadcast(ACTION_STATUS, i -> i.putExtra(EXTRA_STATUS, value).putExtra(EXTRA_ROOM, room));
-        startForegroundNow(value);
+    private void broadcastStatus(String text) {
+        broadcast(ACTION_STATUS, i -> i.putExtra(EXTRA_STATUS, text).putExtra(EXTRA_ROOM, room));
+        if (running) startForegroundNow(text);
     }
 
     private interface IntentEditor { void edit(Intent intent); }
     private void broadcast(String action, IntentEditor editor) {
-        Intent i = new Intent(action);
-        i.setPackage(getPackageName());
-        editor.edit(i);
-        sendBroadcast(i);
+        Intent intent = new Intent(action);
+        intent.setPackage(getPackageName());
+        editor.edit(intent);
+        sendBroadcast(intent);
     }
 
     private void stopNetworking() {
         running = false;
-        if (serverSocket != null) { try { serverSocket.close(); } catch (Exception ignored) {} serverSocket = null; }
-        for (Client c : clients) c.close();
+        if (serverSocket != null) {
+            try { serverSocket.close(); } catch (Exception ignored) {}
+            serverSocket = null;
+        }
+        for (Client client : clients) client.close();
         clients.clear();
-        if (clientConnection != null) { clientConnection.close(); clientConnection = null; }
+        if (clientConnection != null) {
+            clientConnection.close();
+            clientConnection = null;
+        }
     }
 
-    @Override public void onDestroy() { stopNetworking(); stopWifiGroup(); super.onDestroy(); }
+    @Override public void onDestroy() {
+        stopNetworking();
+        if (store != null) store.close();
+        super.onDestroy();
+    }
+
     @Override public IBinder onBind(Intent intent) { return null; }
 
     private final class Client {
-        final Socket socket;
-        DataInputStream in;
-        DataOutputStream out;
-        volatile boolean accepted;
-        Client(Socket socket) {
+        private final Socket socket;
+        private final DataInputStream input;
+        private final DataOutputStream output;
+        private volatile boolean accepted;
+
+        Client(Socket socket) throws Exception {
             this.socket = socket;
-            try {
-                in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
-                out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-            } catch (Exception e) { close(); }
+            this.input = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
+            this.output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
         }
+
         void start() {
-            if (in == null || out == null) return;
             new Thread(() -> {
                 try {
-                    if (!serverMode) {
-                        String hello = room + "\u001F" + password;
-                        writePacket(TYPE_HELLO, hello.getBytes(StandardCharsets.UTF_8));
-                    }
                     while (running && !socket.isClosed()) {
-                        int type = in.readInt();
-                        int len = in.readInt();
-                        if (len <= 0 || len > MAX_PACKET) throw new IllegalStateException("Geçersiz paket");
-                        byte[] payload = new byte[len];
-                        in.readFully(payload);
+                        int type = input.readInt();
+                        int length = input.readInt();
+                        if (length <= 0 || length > MAX_PACKET_BYTES) throw new IllegalStateException("Geçersiz paket boyutu");
+                        byte[] payload = new byte[length];
+                        input.readFully(payload);
                         handlePacket(this, type, payload);
                     }
-                } catch (Exception ignored) { }
-                finally { close(); }
+                } catch (Exception ignored) {
+                } finally {
+                    close();
+                }
             }, "SinyalceReader").start();
         }
+
         synchronized void writePacket(int type, byte[] payload) {
-            if (out == null || socket.isClosed()) return;
-            try { out.writeInt(type); out.writeInt(payload.length); out.write(payload); out.flush(); }
-            catch (Exception e) { close(); }
+            if (payload == null || payload.length > MAX_PACKET_BYTES || socket.isClosed()) return;
+            try {
+                output.writeInt(type);
+                output.writeInt(payload.length);
+                output.write(payload);
+                output.flush();
+            } catch (Exception e) {
+                close();
+            }
         }
+
         void close() {
             try { socket.close(); } catch (Exception ignored) {}
             if (serverMode) clients.remove(this);
@@ -420,21 +485,21 @@ public final class OfflineService extends Service {
         }
     }
 
-    private static byte[] readAll(InputStream input, int max) throws Exception {
+    private static byte[] readAll(InputStream in, int max) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         byte[] buffer = new byte[8192];
         int total = 0;
-        int n;
-        while ((n = input.read(buffer)) != -1) {
-            total += n;
-            if (total > max) throw new IllegalStateException("Görsel 12 MB sınırını aşıyor");
-            out.write(buffer, 0, n);
+        int count;
+        while ((count = in.read(buffer)) != -1) {
+            total += count;
+            if (total > max) throw new IllegalStateException("Görsel boyutu sınırı aşıldı");
+            out.write(buffer, 0, count);
         }
         return out.toByteArray();
     }
 
     private static byte[] joinUtf8(String mime, byte[] bytes) {
-        byte[] meta = (mime + "\u001F").getBytes(StandardCharsets.UTF_8);
+        byte[] meta = (mime + UNIT).getBytes(StandardCharsets.UTF_8);
         byte[] result = new byte[meta.length + bytes.length];
         System.arraycopy(meta, 0, result, 0, meta.length);
         System.arraycopy(bytes, 0, result, meta.length, bytes.length);
@@ -442,12 +507,14 @@ public final class OfflineService extends Service {
     }
 
     private static ParsedImage parseImage(byte[] payload) {
-        int sep = -1;
-        for (int i = 0; i < payload.length; i++) if (payload[i] == 0x1F) { sep = i; break; }
-        if (sep <= 0) throw new IllegalStateException("Görsel paketi bozuk");
-        String mime = new String(payload, 0, sep, StandardCharsets.UTF_8);
-        byte[] bytes = new byte[payload.length - sep - 1];
-        System.arraycopy(payload, sep + 1, bytes, 0, bytes.length);
+        int separator = -1;
+        for (int i = 0; i < payload.length; i++) {
+            if (payload[i] == 0x1F) { separator = i; break; }
+        }
+        if (separator <= 0 || separator >= payload.length - 1) throw new IllegalStateException("Görsel paketi bozuk");
+        String mime = new String(payload, 0, separator, StandardCharsets.UTF_8);
+        byte[] bytes = new byte[payload.length - separator - 1];
+        System.arraycopy(payload, separator + 1, bytes, 0, bytes.length);
         return new ParsedImage(mime, bytes);
     }
 
@@ -458,5 +525,6 @@ public final class OfflineService extends Service {
     }
 
     private static String nonEmpty(String value, String fallback) { return value == null || value.trim().isEmpty() ? fallback : value.trim(); }
+    private static String valueOrEmpty(String value) { return value == null ? "" : value; }
     private static String safe(Exception e) { return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
 }
