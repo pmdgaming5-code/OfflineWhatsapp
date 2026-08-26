@@ -1,35 +1,42 @@
-# OfflineWhatsapp
+# Sinyalce
 
-İnternet olmadan iki Android cihaz arasında doğrudan mesajlaşma için Android uygulaması.
+İnternet olmadan, cihazların Wi‑Fi Direct bağlantısı üzerinden doğrudan mesajlaşması için Android uygulaması.
 
-## Özellikler
+## Yeni özellikler
 
-- Android 13+ hedef SDK (API 35)
-- Android 8.0+ minimum SDK (API 26)
-- Wi‑Fi Direct P2P bağlantısı
-- İnternet sunucusu yok
-- İki cihaz arasında TCP mesaj kanalı
-- Yerel SQLite mesaj geçmişi
-- Android 13 `NEARBY_WIFI_DEVICES` izni
+- Sinyalce mobil sohbet arayüzü
+- Android 13+ hedef SDK 35
+- Kalıcı foreground service ile sunucu/istemci bağlantısı
+- Uygulama ekranı kapansa da bağlantı devam eder; service kullanıcı tarafından durdurulana kadar çalışır
+- Sunucu adı + oda adı + isteğe bağlı şifre
+- Aynı odada birden fazla cihazla mesajlaşma
+- Uygulama ön plandayken mesaj bildirimi yok
+- Uygulama arka plandayken yeni mesaj bildirimi
+- Mesaj ve görsel ses efektleri
+- İnternetsiz görsel gönderme
+- Alınan görselleri galeriye kaydetme
+- Görseli panoya kopyalama / açma
+- Yerel SQLite sohbet geçmişi
+- Android 13 `NEARBY_WIFI_DEVICES` ve `POST_NOTIFICATIONS` izinleri
 - GitHub Actions ile otomatik debug APK
 
 ## Kullanım
 
-1. İki telefona uygulamayı kurun.
-2. Android 13+ cihazlarda "Yakındaki cihazlar" iznini verin.
-3. Bir telefonda `SUNUCU BAŞLAT` seçeneğine dokunun.
-4. Diğer telefonda `CİHAZLARI TARA` seçeneğine dokunun.
-5. Listeden sunucu cihazını seçin.
-6. Bağlantı kurulduğunda mesaj gönderebilirsiniz.
+1. İki telefona Sinyalce'yi kurun.
+2. Android 13+ cihazlarda Yakındaki Cihazlar ve Bildirim izinlerini verin.
+3. Bir telefonda SUNUCU AÇ'a dokunup sunucu adı, oda adı ve isterseniz şifre belirleyin.
+4. Diğer telefonda YAKINDAKİLER ile cihazı bulun ve seçin.
+5. Aynı oda adını ve gerekiyorsa şifreyi girin.
+6. Bağlantı kurulduğunda metin ve görsel gönderebilirsiniz.
+
+## Tamamen offline
+
+Mesaj trafiği internetteki bir sunucuya gitmez. Telefonlar Wi‑Fi Direct P2P grubu ve yerel TCP soketi üzerinden doğrudan haberleşir. `INTERNET` izni Android'in yerel ağ socket API'si için manifestte tutulur; uygulamanın internet bağlantısına ihtiyaç duyduğu anlamına gelmez.
 
 ## Menzil
 
-Uygulama bağlantı için Wi‑Fi Direct kullanır. Menzil telefonların Wi‑Fi radyosuna, antenine, çevreye ve görüş hattına bağlıdır. Uygulama yazılımla 1 km menzil garanti edemez.
+Gerçek menzil telefon donanımına, antene, ortama ve görüş hattına bağlıdır. Uygulama yazılımla belirli bir 1 km menzili garanti edemez.
 
-## Android 13 izinleri
+## Android 13+
 
-Android 13 ve üstünde Wi‑Fi Direct için `NEARBY_WIFI_DEVICES` runtime izni gerekir. Android 12 ve altı için geriye dönük olarak `ACCESS_FINE_LOCATION` tutulur.
-
-## APK
-
-Her `main` push'unda GitHub Actions `assembleDebug` çalıştırılır ve `OfflineWhatsapp-debug` adlı artifact oluşturulur.
+Android 13+ için `NEARBY_WIFI_DEVICES` runtime izni ve bildirimler için `POST_NOTIFICATIONS` kullanılır. Uzun süreli bağlantı, Android foreground service ile sürdürülür.
