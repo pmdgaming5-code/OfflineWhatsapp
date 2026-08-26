@@ -7,10 +7,10 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
-# Cancel stale queued/running builds so the newest commit is always buildable.
+# Give each commit its own build slot; an older stuck run can never block it.
 concurrency:
-  group: sinyalce-android-build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: sinyalce-android-build-${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -58,7 +58,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Sinyalce-debug
+          name: Sinyalce-debug-${{ github.sha }}
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
