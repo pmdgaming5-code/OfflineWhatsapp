@@ -209,7 +209,7 @@ public final class OfflineService extends Service {
         PendingIntent pending = PendingIntent.getActivity(this, 0, launch,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         Notification.Builder builder = new Notification.Builder(this, SERVICE_CHANNEL)
-                .setSmallIcon(android.R.drawable.stat_sys_wifi)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setContentTitle("Sinyalce")
                 .setContentText(text)
                 .setContentIntent(pending)
