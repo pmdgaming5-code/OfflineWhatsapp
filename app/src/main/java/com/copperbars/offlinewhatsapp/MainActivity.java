@@ -3,17 +3,25 @@ package com.copperbars.offlinewhatsapp;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.media.AudioManager;
+import android.media.ToneGenerator;
+import android.net.wifi.WifiManager;
 import android.net.wifi.p2p.WifiP2pConfig;
 import android.net.wifi.p2p.WifiP2pDevice;
 import android.net.wifi.p2p.WifiP2pManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
@@ -25,18 +33,25 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.RequiresApi;
+
 import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.List;
 
 public class MainActivity extends Activity {
 
-    private static final int REQ_PERMISSIONS = 1001;
+    private static final int REQ_WIFI_PERMISSION = 1001;
+    private static final int REQ_NOTIFICATION_PERMISSION = 1002;
     private static final int SERVER_PORT = 45821;
+    private static final String NOTIFICATION_CHANNEL_ID = "offline_chat";
 
     private WifiP2pManager manager;
     private WifiP2pManager.Channel channel;
     private BroadcastReceiver receiver;
+    private WifiManager wifiManager;
+    private final Handler handler = new Handler(Looper.getMainLooper());
 
     private final List<WifiP2pDevice> peers = new ArrayList<>();
     private ArrayAdapter<String> peerAdapter;
@@ -49,16 +64,21 @@ public class MainActivity extends Activity {
     private LinearLayout messagesLayout;
     private EditText messageInput;
     private boolean registered;
+    private int notificationId = 2000;
+    private ToneGenerator toneGenerator;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
         store = new MessageStore(this);
+        wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         manager = (WifiP2pManager) getSystemService(Context.WIFI_P2P_SERVICE);
         channel = manager.initialize(this, getMainLooper(), () -> setStatus("Wi‑Fi Direct kanalı kesildi."));
         receiver = createReceiver();
+        toneGenerator = new ToneGenerator(AudioManager.STREAM_NOTIFICATION, 75);
 
+        createNotificationChannel();
         buildUi();
         requestRequiredPermissions();
         loadMessages();
@@ -76,7 +96,7 @@ public class MainActivity extends Activity {
         title.setGravity(Gravity.CENTER_HORIZONTAL);
 
         TextView info = new TextView(this);
-        info.setText("İnternet gerekmez • Wi‑Fi Direct P2P\nEn iyi menzil için açık alanda test edin.");
+        info.setText("%100 yerel mesajlaşma • İnternet gerekmez\nWi‑Fi internet erişimi olmasa da Wi‑Fi Direct kullanılabilir.");
         info.setTextSize(15);
         info.setPadding(0, 8, 0, 8);
 
@@ -120,6 +140,10 @@ public class MainActivity extends Activity {
         messageInput = new EditText(this);
         messageInput.setHint("Mesaj yaz…");
         messageInput.setSingleLine(true);
+        messageInput.setOnEditorActionListener((v, actionId, event) -> {
+            sendMessage();
+            return true;
+        });
 
         Button send = new Button(this);
         send.setText("GÖNDER");
@@ -133,7 +157,6 @@ public class MainActivity extends Activity {
         root.addView(status);
         root.addView(buttons);
         root.addView(peerStatus);
-
         root.addView(list, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 180));
 
         TextView chatLabel = new TextView(this);
@@ -141,7 +164,6 @@ public class MainActivity extends Activity {
         chatLabel.setTextSize(18);
         chatLabel.setPadding(0, 12, 0, 6);
         root.addView(chatLabel);
-
         root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         root.addView(composer);
 
@@ -163,7 +185,7 @@ public class MainActivity extends Activity {
                     int state = intent.getIntExtra(WifiP2pManager.EXTRA_WIFI_STATE, -1);
                     setStatus(state == WifiP2pManager.WIFI_P2P_STATE_ENABLED
                             ? "Durum: Wi‑Fi Direct açık"
-                            : "Durum: Wi‑Fi Direct kapalı");
+                            : "Durum: Wi‑Fi Direct kapalı • Wi‑Fi'yi açın");
                 } else if (WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION.equals(action)) {
                     requestPeers();
                 } else if (WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION.equals(action)) {
@@ -205,24 +227,51 @@ public class MainActivity extends Activity {
             if (checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
                 needed.add(Manifest.permission.NEARBY_WIFI_DEVICES);
             }
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                handler.postDelayed(() -> requestPermissions(
+                        new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIFICATION_PERMISSION), 500);
+            }
         } else if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             needed.add(Manifest.permission.ACCESS_FINE_LOCATION);
         }
+
         if (!needed.isEmpty()) {
-            requestPermissions(needed.toArray(new String[0]), REQ_PERMISSIONS);
+            requestPermissions(needed.toArray(new String[0]), REQ_WIFI_PERMISSION);
+        } else if (Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+            setStatus(initialStatus());
         } else {
-            setStatus("Durum: Hazır");
+            setStatus(initialStatus() + " • Bildirim izni bekleniyor");
         }
     }
 
     @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQ_PERMISSIONS) {
+        if (requestCode == REQ_WIFI_PERMISSION) {
             boolean ok = true;
             for (int r : grantResults) ok &= r == PackageManager.PERMISSION_GRANTED;
-            setStatus(ok ? "Durum: Hazır" : "Durum: Gerekli izin verilmedi");
+            if (ok) {
+                setStatus(initialStatus());
+                maybeRequestNotifications();
+            } else {
+                setStatus("Durum: Yakındaki cihazlar izni verilmedi");
+            }
+        } else if (requestCode == REQ_NOTIFICATION_PERMISSION) {
+            setStatus(initialStatus());
         }
+    }
+
+    private void maybeRequestNotifications() {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIFICATION_PERMISSION);
+        }
+    }
+
+    private String initialStatus() {
+        if (wifiManager != null && !wifiManager.isWifiEnabled()) {
+            return "Durum: Wi‑Fi kapalı • İnternet gerekmez, Wi‑Fi'yi açın";
+        }
+        return "Durum: Hazır • İnternet gerekli değil";
     }
 
     @SuppressLint("MissingPermission")
@@ -232,14 +281,21 @@ public class MainActivity extends Activity {
             requestRequiredPermissions();
             return;
         }
+        if (wifiManager != null && !wifiManager.isWifiEnabled()) {
+            setStatus("Tarama yapılamadı • İnternet değil, Wi‑Fi radyo bağlantısı gerekli");
+            toast("Wi‑Fi'yi aç. İnternet bağlantısı gerekmiyor.");
+            return;
+        }
 
         manager.discoverPeers(channel, new WifiP2pManager.ActionListener() {
             @Override public void onSuccess() {
-                setStatus("Durum: Cihaz aranıyor…");
+                setStatus("Durum: Yerel cihaz aranıyor… İnternet kullanılmıyor");
+                playSound(false);
             }
 
             @Override public void onFailure(int reason) {
                 setStatus("Tarama başarısız: " + p2pError(reason));
+                playErrorSound();
             }
         });
     }
@@ -270,11 +326,13 @@ public class MainActivity extends Activity {
         setStatus("Durum: " + peer.deviceName + " cihazına bağlanıyor…");
         manager.connect(channel, config, new WifiP2pManager.ActionListener() {
             @Override public void onSuccess() {
-                toast("Wi‑Fi Direct bağlantısı kuruluyor.");
+                toast("Yerel Wi‑Fi Direct bağlantısı kuruluyor.");
+                playSound(false);
             }
 
             @Override public void onFailure(int reason) {
                 setStatus("Bağlantı başarısız: " + p2pError(reason));
+                playErrorSound();
             }
         });
     }
@@ -286,15 +344,27 @@ public class MainActivity extends Activity {
             requestRequiredPermissions();
             return;
         }
+        if (wifiManager != null && !wifiManager.isWifiEnabled()) {
+            setStatus("Sunucu açılamadı • Wi‑Fi kapalı. İnternet gerekmiyor; Wi‑Fi radyo açık olmalı.");
+            toast("Wi‑Fi'yi aç; mobil veri veya internet gerekmez.");
+            playErrorSound();
+            return;
+        }
 
+        // This creates a local Wi‑Fi Direct group. No Internet connection is checked or required.
         manager.createGroup(channel, new WifiP2pManager.ActionListener() {
             @Override public void onSuccess() {
-                setStatus("Durum: Offline sunucu grubu oluşturuldu.");
-                toast("Sunucu hazır. Diğer cihazda 'Cihazları Tara' yap.");
+                setStatus("Durum: ✅ Offline sunucu grubu oluşturuldu");
+                toast("Sunucu hazır. Diğer cihazda CİHAZLARI TARA.");
+                playSound(false);
+                notifyUser("Offline sunucu hazır", "Diğer cihaz Cihazları Tara ile bağlanabilir.");
+                handler.postDelayed(MainActivity.this::requestConnectionInfo, 700);
             }
 
             @Override public void onFailure(int reason) {
                 setStatus("Sunucu başlatılamadı: " + p2pError(reason));
+                playErrorSound();
+                notifyUser("Sunucu başlatılamadı", p2pError(reason));
             }
         });
     }
@@ -304,7 +374,7 @@ public class MainActivity extends Activity {
         manager.requestConnectionInfo(channel, info -> {
             if (!info.groupFormed) {
                 closeConnection();
-                setStatus("Durum: Bağlantı yok");
+                setStatus("Durum: Bağlantı yok • Yerel P2P bekleniyor");
                 return;
             }
 
@@ -312,10 +382,10 @@ public class MainActivity extends Activity {
             if (ownerAddress == null) return;
 
             if (info.isGroupOwner) {
-                setStatus("Durum: Sunucu aktif • " + ownerAddress.getHostAddress());
+                setStatus("Durum: ✅ Offline sunucu aktif • " + ownerAddress.getHostAddress());
                 if (connection == null) createServerConnection();
             } else {
-                setStatus("Durum: Sunucuya bağlandı • " + ownerAddress.getHostAddress());
+                setStatus("Durum: ✅ Offline sunucuya bağlandı • " + ownerAddress.getHostAddress());
                 if (connection == null) createClientConnection(ownerAddress.getHostAddress());
             }
         });
@@ -325,7 +395,7 @@ public class MainActivity extends Activity {
         closeConnection();
         connection = new PeerConnection(connectionListener());
         connection.startServer();
-        setStatus("Durum: Sunucu bekliyor • port " + SERVER_PORT);
+        setStatus("Durum: Offline sunucu bekliyor • port " + SERVER_PORT);
     }
 
     private void createClientConnection(String host) {
@@ -337,20 +407,26 @@ public class MainActivity extends Activity {
     private PeerConnection.Listener connectionListener() {
         return new PeerConnection.Listener() {
             @Override public void onConnected() {
-                setStatus("Durum: ✅ Mesajlaşmaya hazır");
+                setStatus("Durum: ✅ İnternetsiz mesajlaşmaya hazır");
+                playSound(false);
+                notifyUser("Bağlantı kuruldu", "OfflineWhatsapp artık doğrudan cihazla bağlı.");
             }
 
             @Override public void onMessage(String message) {
                 store.add(message, true, System.currentTimeMillis());
                 addMessageBubble(message, true);
+                playIncomingSound();
+                notifyUser("Yeni offline mesaj", message);
             }
 
             @Override public void onDisconnected() {
                 setStatus("Durum: Bağlantı kesildi");
+                playErrorSound();
             }
 
             @Override public void onError(String error) {
                 setStatus("Hata: " + error);
+                playErrorSound();
             }
         };
     }
@@ -361,6 +437,7 @@ public class MainActivity extends Activity {
 
         if (connection == null) {
             toast("Önce iki cihazı Wi‑Fi Direct ile bağlayın.");
+            playErrorSound();
             return;
         }
 
@@ -368,6 +445,7 @@ public class MainActivity extends Activity {
         store.add(message, false, System.currentTimeMillis());
         addMessageBubble(message, false);
         messageInput.setText("");
+        playSound(true);
     }
 
     private void addMessageBubble(String message, boolean incoming) {
@@ -382,7 +460,6 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         params.gravity = incoming ? Gravity.START : Gravity.END;
         params.setMargins(6, 5, 6, 5);
-
         messagesLayout.addView(bubble, params);
     }
 
@@ -422,15 +499,74 @@ public class MainActivity extends Activity {
     private static String p2pError(int reason) {
         switch (reason) {
             case WifiP2pManager.P2P_UNSUPPORTED: return "P2P desteklenmiyor";
-            case WifiP2pManager.BUSY: return "Wi‑Fi Direct meşgul";
+            case WifiP2pManager.BUSY: return "Wi‑Fi Direct meşgul; birkaç saniye sonra tekrar deneyin";
             case WifiP2pManager.ERROR: return "Wi‑Fi Direct genel hatası";
             default: return "kod " + reason;
         }
     }
 
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    NOTIFICATION_CHANNEL_ID,
+                    "Offline mesajlar",
+                    NotificationManager.IMPORTANCE_HIGH);
+            channel.setDescription("İnternetsiz OfflineWhatsapp bağlantı ve mesaj bildirimleri");
+            channel.enableVibration(true);
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            manager.createNotificationChannel(channel);
+        }
+    }
+
+    private void notifyUser(String title, String text) {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        Intent intent = new Intent(this, MainActivity.class);
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+                this,
+                0,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        android.app.Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? new android.app.Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
+                : new android.app.Notification.Builder(this);
+
+        builder.setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .setCategory(android.app.Notification.CATEGORY_MESSAGE)
+                .setOnlyAlertOnce(false);
+
+        NotificationManager notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        notificationManager.notify(notificationId++, builder.build());
+    }
+
+    private void playSound(boolean sent) {
+        if (toneGenerator == null) return;
+        toneGenerator.startTone(sent ? ToneGenerator.TONE_PROP_BEEP : ToneGenerator.TONE_PROP_ACK, 90);
+    }
+
+    private void playIncomingSound() {
+        if (toneGenerator == null) return;
+        toneGenerator.startTone(ToneGenerator.TONE_PROP_BEEP2, 120);
+    }
+
+    private void playErrorSound() {
+        if (toneGenerator == null) return;
+        toneGenerator.startTone(ToneGenerator.TONE_SUP_ERROR, 180);
+    }
+
     @Override
     protected void onDestroy() {
         closeConnection();
+        if (toneGenerator != null) {
+            toneGenerator.release();
+            toneGenerator = null;
+        }
         if (manager != null && channel != null && hasWifiPermission()) {
             manager.removeGroup(channel, null);
         }
