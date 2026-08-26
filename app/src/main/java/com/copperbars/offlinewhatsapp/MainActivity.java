@@ -33,9 +33,6 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.RequiresApi;
-
 import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.List;
@@ -140,10 +137,6 @@ public class MainActivity extends Activity {
         messageInput = new EditText(this);
         messageInput.setHint("Mesaj yaz…");
         messageInput.setSingleLine(true);
-        messageInput.setOnEditorActionListener((v, actionId, event) -> {
-            sendMessage();
-            return true;
-        });
 
         Button send = new Button(this);
         send.setText("GÖNDER");
@@ -228,8 +221,7 @@ public class MainActivity extends Activity {
                 needed.add(Manifest.permission.NEARBY_WIFI_DEVICES);
             }
             if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                handler.postDelayed(() -> requestPermissions(
-                        new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIFICATION_PERMISSION), 500);
+                handler.postDelayed(() -> requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIFICATION_PERMISSION), 500);
             }
         } else if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             needed.add(Manifest.permission.ACCESS_FINE_LOCATION);
@@ -237,15 +229,13 @@ public class MainActivity extends Activity {
 
         if (!needed.isEmpty()) {
             requestPermissions(needed.toArray(new String[0]), REQ_WIFI_PERMISSION);
-        } else if (Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
-            setStatus(initialStatus());
         } else {
-            setStatus(initialStatus() + " • Bildirim izni bekleniyor");
+            setStatus(initialStatus());
         }
     }
 
     @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQ_WIFI_PERMISSION) {
             boolean ok = true;
@@ -351,7 +341,6 @@ public class MainActivity extends Activity {
             return;
         }
 
-        // This creates a local Wi‑Fi Direct group. No Internet connection is checked or required.
         manager.createGroup(channel, new WifiP2pManager.ActionListener() {
             @Override public void onSuccess() {
                 setStatus("Durum: ✅ Offline sunucu grubu oluşturuldu");
